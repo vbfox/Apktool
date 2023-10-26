@@ -33,6 +33,8 @@ import brut.directory.ExtFile;
 import brut.directory.ZipUtils;
 import brut.util.BrutIO;
 import brut.util.OS;
+import org.apache.commons.compress.archivers.zip.*;
+import org.apache.commons.compress.parallel.InputStreamSupplier;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.exception.ExceptionUtils;
@@ -45,69 +47,66 @@ import java.nio.file.Files;
 import java.util.*;
 import java.util.logging.Logger;
 import java.util.zip.CRC32;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipFile;
-import java.util.zip.ZipOutputStream;
 
 public class ApkBuilder {
     abstract static class BuildAction {
 
-}
+    }
 
     static final class BuildSourcesAction extends BuildAction {
-    private final String mFolder;
-    private final String mFileName;
-    private final boolean mBuildSmali;
+        private final String mFolder;
+        private final String mFileName;
+        private final boolean mBuildSmali;
 
-    public BuildSourcesAction(String folder, String fileName, boolean buildSmali) {
-        mFolder = folder;
-        mFileName = fileName;
-        mBuildSmali = buildSmali;
-    }
+        public BuildSourcesAction(String folder, String fileName, boolean buildSmali) {
+            mFolder = folder;
+            mFileName = fileName;
+            mBuildSmali = buildSmali;
+        }
 
-    public String getFolder() {
-        return mFolder;
-    }
+        public String getFolder() {
+            return mFolder;
+        }
 
-    public String getFileName() {
-        return mFileName;
-    }
+        public String getFileName() {
+            return mFileName;
+        }
 
-    public boolean getBuildSmali() {
-        return mBuildSmali;
+        public boolean getBuildSmali() {
+            return mBuildSmali;
+        }
     }
-}
 
     static final class BuildManifestAndResourcesAction extends BuildAction {
-    private final File mManifest;
-    private final File mManifestOriginal;
+        private final File mManifest;
+        private final File mManifestOriginal;
 
-    public BuildManifestAndResourcesAction(File manifest, File manifestOriginal) {
+        public BuildManifestAndResourcesAction(File manifest, File manifestOriginal) {
 
-        this.mManifest = manifest;
-        this.mManifestOriginal = manifestOriginal;
+            this.mManifest = manifest;
+            this.mManifestOriginal = manifestOriginal;
+        }
+
+        public File getManifest() {
+            return mManifest;
+        }
+
+        public File getManifestOriginal() {
+            return mManifestOriginal;
+        }
     }
-
-    public File getManifest() {
-        return mManifest;
-    }
-
-    public File getManifestOriginal() {
-        return mManifestOriginal;
-    }
-}
 
     static final class BuildLibraryAction extends BuildAction {
-    private final String mFolder;
+        private final String mFolder;
 
-    public BuildLibraryAction(String folder) {
-        mFolder = folder;
-    }
+        public BuildLibraryAction(String folder) {
+            mFolder = folder;
+        }
 
-    public String getFolder() {
-        return mFolder;
+        public String getFolder() {
+            return mFolder;
+        }
     }
-}
 
     static final class CopyOriginalFilesAction extends BuildAction {
     }
@@ -166,14 +165,11 @@ public class ApkBuilder {
         addBuildSourcesAction(buildActions);
         addBuildNonDefaultSourcesActions(buildActions);
         addBuildLibsActions(buildActions);
+
         // then run them all
         runBuildActionsInParallel(buildActions);
 
         buildApk(outFile);
-
-        // we must go after the Apk is built, and copy the files in via Zip
-        // this is because Aapt won't add files it doesn't know (ex unknown files)
-        buildUnknownFiles(outFile);
 
         // we copied the AndroidManifest.xml to AndroidManifest.xml.orig so we can edit it
         // lets restore the unedited one, to not change the original
@@ -535,90 +531,54 @@ public class ApkBuilder {
         }
     }
 
-    private void buildUnknownFiles(File outFile) throws AndrolibException {
-        if (mApkInfo.unknownFiles != null) {
-            LOGGER.info("Copying unknown files/dir...");
-
-            Map<String, String> files = mApkInfo.unknownFiles;
-            File tempFile = new File(outFile.getParent(), outFile.getName() + ".apktool_temp");
-            boolean renamed = outFile.renameTo(tempFile);
-            if (!renamed) {
-                throw new AndrolibException("Unable to rename temporary file");
-            }
-
-            try (
-                ZipFile inputFile = new ZipFile(tempFile);
-                ZipOutputStream actualOutput = new ZipOutputStream(Files.newOutputStream(outFile.toPath()))
-            ) {
-                actualOutput.setLevel(mConfig.zipCompressionLevel);
-                copyExistingFiles(inputFile, actualOutput);
-                copyUnknownFiles(actualOutput, files);
-            } catch (IOException | BrutException ex) {
-                throw new AndrolibException(ex);
-            }
-
-            // Remove our temporary file.
-            //noinspection ResultOfMethodCallIgnored
-            tempFile.delete();
-        }
-    }
-
-    private void copyExistingFiles(ZipFile inputFile, ZipOutputStream outputFile) throws IOException {
-        // First, copy the contents from the existing outFile:
-        Enumeration<? extends ZipEntry> entries = inputFile.entries();
-        while (entries.hasMoreElements()) {
-            ZipEntry entry = new ZipEntry(entries.nextElement());
-
-            // We can't reuse the compressed size because it depends on compression sizes.
-            entry.setCompressedSize(-1);
-            outputFile.putNextEntry(entry);
-
-            // No need to create directory entries in the final apk
-            if (!entry.isDirectory()) {
-                BrutIO.copy(inputFile, outputFile, entry);
-            }
-
-            outputFile.closeEntry();
-        }
-    }
-
-    private void copyUnknownFiles(ZipOutputStream outputFile, Map<String, String> files)
-            throws BrutException, IOException {
+    private void copyUnknownFiles(ParallelScatterZipCreator zipCreator, Map<String, String> files)
+            throws BrutException {
         File unknownFileDir = new File(mApkDir, UNK_DIRNAME);
 
-        // loop through unknown files
-        for (Map.Entry<String,String> unknownFileInfo : files.entrySet()) {
-            File inputFile;
+        try {
+            // loop through unknown files
+            for (Map.Entry<String, String> unknownFileInfo : files.entrySet()) {
+                File inputFile;
 
-            try {
-                inputFile = new File(unknownFileDir, BrutIO.sanitizeUnknownFile(unknownFileDir, unknownFileInfo.getKey()));
-            } catch (RootUnknownFileException | InvalidUnknownFileException | TraversalUnknownFileException exception) {
-                LOGGER.warning(String.format("Skipping file %s (%s)", unknownFileInfo.getKey(), exception.getMessage()));
-                continue;
+                try {
+                    inputFile = new File(unknownFileDir, BrutIO.sanitizeUnknownFile(unknownFileDir, unknownFileInfo.getKey()));
+                } catch (RootUnknownFileException | InvalidUnknownFileException |
+                         TraversalUnknownFileException exception) {
+                    LOGGER.warning(String.format("Skipping file %s (%s)", unknownFileInfo.getKey(), exception.getMessage()));
+                    continue;
+                }
+
+                if (inputFile.isDirectory()) {
+                    continue;
+                }
+
+                ZipArchiveEntry newEntry = new ZipArchiveEntry(unknownFileInfo.getKey());
+                int method = Integer.parseInt(unknownFileInfo.getValue());
+                LOGGER.fine(String.format("Copying unknown file %s with method %d", unknownFileInfo.getKey(), method));
+                if (method == ZipArchiveEntry.STORED) {
+                    newEntry.setMethod(ZipArchiveEntry.STORED);
+                    newEntry.setSize(inputFile.length());
+                    newEntry.setCompressedSize(-1);
+                    BufferedInputStream unknownFile = new BufferedInputStream(Files.newInputStream(inputFile.toPath()));
+                    CRC32 crc = BrutIO.calculateCrc(unknownFile);
+                    newEntry.setCrc(crc.getValue());
+                    unknownFile.close();
+                } else {
+                    newEntry.setMethod(ZipArchiveEntry.DEFLATED);
+                }
+
+                InputStreamSupplier streamSupplier = () -> {
+                    try {
+                        return new FileInputStream(inputFile);
+                    } catch (FileNotFoundException e) {
+                        throw new RuntimeException(e);
+                    }
+                };
+
+                zipCreator.addArchiveEntry(newEntry, streamSupplier);
             }
-
-            if (inputFile.isDirectory()) {
-                continue;
-            }
-
-            ZipEntry newEntry = new ZipEntry(unknownFileInfo.getKey());
-            int method = Integer.parseInt(unknownFileInfo.getValue());
-            LOGGER.fine(String.format("Copying unknown file %s with method %d", unknownFileInfo.getKey(), method));
-            if (method == ZipEntry.STORED) {
-                newEntry.setMethod(ZipEntry.STORED);
-                newEntry.setSize(inputFile.length());
-                newEntry.setCompressedSize(-1);
-                BufferedInputStream unknownFile = new BufferedInputStream(Files.newInputStream(inputFile.toPath()));
-                CRC32 crc = BrutIO.calculateCrc(unknownFile);
-                newEntry.setCrc(crc.getValue());
-                unknownFile.close();
-            } else {
-                newEntry.setMethod(ZipEntry.DEFLATED);
-            }
-            outputFile.putNextEntry(newEntry);
-
-            BrutIO.copy(inputFile, outputFile);
-            outputFile.closeEntry();
+        }catch (IOException e){
+            throw new BrutException(e);
         }
     }
 
@@ -642,8 +602,10 @@ public class ApkBuilder {
     }
 
     private void zipPackage(File apkFile, File rawDir, File assetDir) throws AndrolibException {
+        Map<String, String> files = mApkInfo.unknownFiles;
+
         try {
-            ZipUtils.zipFolders(rawDir, apkFile, assetDir, mApkInfo.doNotCompress, mConfig.zipCompressionLevel);
+            ZipUtils.zipFolders(rawDir, apkFile, assetDir, mApkInfo.doNotCompress, mConfig.zipCompressionLevel, zipCreator -> copyUnknownFiles(zipCreator, files));
         } catch (IOException | BrutException ex) {
             throw new AndrolibException(ex);
         }
