@@ -39,7 +39,9 @@ public class ZipUtils {
         // Private constructor for utility class
     }
 
-    public static void zipFolders(final File folder, final File zip, final File assets, final Collection<String> doNotCompress, final AdditionalZipOperation additionalZipOperation)
+    public static void zipFolders(final File folder, final File zip, final File assets,
+                                  final Collection<String> doNotCompress, final int level,
+                                  final AdditionalZipOperation additionalZipOperation)
             throws BrutException, IOException {
 
         mDoNotCompress = doNotCompress;
@@ -55,6 +57,7 @@ public class ZipUtils {
         }
 
         ZipArchiveOutputStream zipOutputStream = new ZipArchiveOutputStream(Files.newOutputStream(zip.toPath()));
+        zipOutputStream.setLevel(level);
         zipOutputStream.setUseZip64(Zip64Mode.AsNeeded);
         try {
             zipCreator.writeTo(zipOutputStream);

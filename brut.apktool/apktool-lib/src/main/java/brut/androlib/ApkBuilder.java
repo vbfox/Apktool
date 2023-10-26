@@ -604,7 +604,8 @@ public class ApkBuilder {
         Map<String, String> files = mApkInfo.unknownFiles;
 
         try {
-            ZipUtils.zipFolders(rawDir, apkFile, assetDir, mApkInfo.doNotCompress, zipCreator -> copyUnknownFiles(zipCreator, files));
+            ZipUtils.zipFolders(rawDir, apkFile, assetDir, mApkInfo.doNotCompress, mConfig.zipCompressionLevel,
+                zipCreator -> copyUnknownFiles(zipCreator, files));
         } catch (IOException | BrutException ex) {
             throw new AndrolibException(ex);
         }
