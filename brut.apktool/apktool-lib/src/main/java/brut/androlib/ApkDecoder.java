@@ -29,11 +29,13 @@ import brut.directory.DirectoryException;
 import brut.util.OS;
 import com.android.tools.smali.dexlib2.iface.DexFile;
 import org.apache.commons.io.FilenameUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 
 import java.io.*;
 import java.util.*;
 import java.util.logging.Logger;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 public class ApkDecoder {
     private final static Logger LOGGER = Logger.getLogger(ApkDecoder.class.getName());
@@ -117,42 +119,42 @@ public class ApkDecoder {
             }
             resourcesDecoder.updateApkInfo(outDir);
 
-            if (mApkInfo.hasSources()) {
-                switch (mConfig.decodeSources) {
-                    case Config.DECODE_SOURCES_NONE:
-                        copySourcesRaw(outDir, "classes.dex");
-                        break;
-                    case Config.DECODE_SOURCES_SMALI:
-                    case Config.DECODE_SOURCES_SMALI_ONLY_MAIN_CLASSES:
-                        decodeSourcesSmali(outDir, "classes.dex");
-                        break;
-                }
-            }
+            // foreach dex file in root, lets disassemble it
+            List<String> dexFiles = apkFile.getDirectory()
+                .getFiles(true)
+                .stream()
+                .filter(file -> file.endsWith(".dex"))
+                .collect(Collectors.toList());
 
-            if (mApkInfo.hasMultipleSources()) {
-                // foreach unknown dex file in root, lets disassemble it
-                Set<String> files = apkFile.getDirectory().getFiles(true);
-                for (String file : files) {
-                    if (file.endsWith(".dex")) {
-                        if (!file.equalsIgnoreCase("classes.dex")) {
-                            switch(mConfig.decodeSources) {
-                                case Config.DECODE_SOURCES_NONE:
-                                    copySourcesRaw(outDir, file);
-                                    break;
-                                case Config.DECODE_SOURCES_SMALI:
+            try {
+                dexFiles.parallelStream().forEach(file -> {
+                    try {
+                        switch (mConfig.decodeSources) {
+                            case Config.DECODE_SOURCES_NONE:
+                                copySourcesRaw(outDir, file);
+                                break;
+                            case Config.DECODE_SOURCES_SMALI:
+                                decodeSourcesSmali(outDir, file);
+                                break;
+                            case Config.DECODE_SOURCES_SMALI_ONLY_MAIN_CLASSES:
+                                if (file.startsWith("classes") && file.endsWith(".dex")) {
                                     decodeSourcesSmali(outDir, file);
-                                    break;
-                                case Config.DECODE_SOURCES_SMALI_ONLY_MAIN_CLASSES:
-                                    if (file.startsWith("classes") && file.endsWith(".dex")) {
-                                        decodeSourcesSmali(outDir, file);
-                                    } else {
-                                        copySourcesRaw(outDir, file);
-                                    }
-                                    break;
-                            }
+                                } else {
+                                    copySourcesRaw(outDir, file);
+                                }
+                                break;
                         }
+                    } catch (AndrolibException e) {
+                        throw new RuntimeException(e);
                     }
+                });
+            } catch (RuntimeException e) {
+                Throwable rootCause = ExceptionUtils.getRootCause(e);
+                if (rootCause instanceof AndrolibException) {
+                    throw (AndrolibException) rootCause;
                 }
+
+                throw e;
             }
 
             // In case we have no resources. We should store the minSdk we pulled from the source opcode api level
