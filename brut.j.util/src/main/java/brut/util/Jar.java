@@ -21,6 +21,7 @@ import org.apache.commons.io.IOUtils;
 
 import java.io.*;
 import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
@@ -38,7 +39,8 @@ public abstract class Jar {
     }
 
     public static File extractToTmp(String resourcePath, Class<?> clazz) throws BrutException {
-        return extractToTmp(resourcePath, "brut_util_Jar_", clazz);
+
+        return extractToTmp(resourcePath, "brut_util_Jar_" + Paths.get(resourcePath).getFileName().toString() + "_", clazz);
     }
 
     public static File extractToTmp(String resourcePath, String tmpPrefix, Class<?> clazz) throws BrutException {
